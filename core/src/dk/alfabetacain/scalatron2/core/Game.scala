@@ -64,7 +64,6 @@ object Game {
     ): Stream[F, (GameState[F], List[Event])] = {
       Stream.unfoldEval[F, GameState[F], (GameState[F], List[Event])](state) {
         currentState =>
-          println(s"Current time = ${currentState.time}")
           if (currentState.time == steps) {
             Option.empty[((GameState[F], List[Event]), GameState[F])].pure[F]
           } else {
