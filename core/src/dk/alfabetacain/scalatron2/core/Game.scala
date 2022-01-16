@@ -3,6 +3,7 @@ package dk.alfabetacain.scalatron2.core
 import dk.alfabetacain.scalatron2.interface.Command
 import dk.alfabetacain.scalatron2.interface.CommandFeedback
 import dk.alfabetacain.scalatron2.interface.BotImpl
+import dk.alfabetacain.scalatron2.events.Event
 import cats.data.State
 import cats.data.StateT
 import cats.Monad
@@ -12,74 +13,15 @@ import cats.implicits._
 import cats.effect.std.Random
 import monocle.syntax.all._
 import scala.annotation.tailrec
+import cats.Parallel
+import fs2.Stream
 
 case class Point(x: Int, y: Int) {
   def move(deltaX: Int, deltaY: Int): Point =
     Point(x + deltaX, y + deltaY)
 }
 
-sealed trait Board[F[_]] {
-  def length: Int
-  def points: List[(Point, Entity[F])]
-  def positionOf(entity: Entity[F]): Option[Point]
-  def entityAt(point: Point): Option[Entity[F]]
-  def view(point: Point, size: Int): Array[Array[Option[Entity[F]]]]
-  def set(entity: Entity[F], point: Point): Board[F]
-  def clear(point: Point): Board[F]
-  def removeEntity(id: EntityId): Board[F]
-}
-
-object Board {
-  def create[F[_]](length: Int): Board[F] = {
-    ImmutableMapBoard[F](length, Map.empty)
-  }
-
-  private final case class ImmutableMapBoard[F[_]](
-      length: Int,
-      board: Map[Point, Entity[F]]
-  ) extends Board[F] {
-
-    override def points: List[(Point, Entity[F])] = board.toList
-
-    override def positionOf(entity: Entity[F]): Option[Point] =
-      board.find(_._2 == entity).map(_._1)
-
-    override def entityAt(point: Point): Option[Entity[F]] = board.get(point)
-
-    override def view(
-        point: Point,
-        size: Int
-    ): Array[Array[Option[Entity[F]]]] = {
-      val actualView = Range
-        .inclusive(point.y - size, point.y + size)
-        .map(_ % length)
-        .map { y =>
-          Range
-            .inclusive(point.x - size, point.x + size)
-            .map(_ % length)
-            .map { x =>
-              entityAt(Point(x, y))
-            }
-            .toList
-        }
-        .toList
-      actualView.map(_.toArray).toArray
-    }
-
-    override def set(entity: Entity[F], point: Point): Board[F] = {
-      ImmutableMapBoard[F](length, board + (point -> entity))
-    }
-
-    override def clear(point: Point): Board[F] =
-      ImmutableMapBoard[F](length, board.removed(point))
-
-    override def removeEntity(id: EntityId): Board[F] = {
-      this.focus(_.board).modify(_.filter(_._2.id != id))
-    }
-  }
-}
-
-case class GameState[F[_]](
+final case class GameState[F[_]](
     entities: Map[EntityId, Entity[F]],
     occupancies: Board[F],
     commandFeedback: Map[EntityId, CommandFeedback],
@@ -101,44 +43,93 @@ object Game {
 
   final case class BotState(state: Map[String, String], energy: Int)
 
-  def run[F[_]: Random: Monad](
-      entities: List[Entity[F]],
-      board: Board[F],
+  def run[F[_]: Random: Monad: Parallel](
+      numberOfFluppets: Int,
+      numberOfSnorgs: Int,
+      numberOfZugars: Int,
+      numberOfToxifera: Int,
+      bots: List[Entity.Bot[F]],
+      boardSize: Int,
       steps: Int
-  ): F[GameState[F]] = {
-    val gameState =
-      GameState[F](
-        entities.map(e => (e.id, e)).toMap,
-        board,
-        Map.empty,
-        0,
-        Map.empty
-      )
+  ): F[Stream[F, (GameState[F], List[Event])]] = {
+    val fluppets =
+      List.fill(numberOfFluppets)(Entity.fluppet[F](EntityId.generate))
+    val entities: List[Entity[F]] =
+      fluppets ++ bots
+    val board = Board.create[F](boardSize)
 
-    def doRun(state: GameState[F], steps: Int): F[GameState[F]] = {
-      if (steps <= 0) {
-        state.pure[F]
-      } else {
-        step(state).flatMap(doRun(_, steps - 1))
+    def doRun(
+        state: GameState[F],
+        steps: Int
+    ): Stream[F, (GameState[F], List[Event])] = {
+      Stream.unfoldEval[F, GameState[F], (GameState[F], List[Event])](state) {
+        currentState =>
+          println(s"Current time = ${currentState.time}")
+          if (currentState.time == steps) {
+            Option.empty[((GameState[F], List[Event]), GameState[F])].pure[F]
+          } else {
+            step[F](currentState).map(s => Some(((s, List.empty[Event]), s)))
+          }
       }
     }
-    doRun(gameState, steps)
+    for {
+      board <- setupBoard(entities, Board.create[F](boardSize))
+      initialStates = setupEntities(entities)
+      gameState =
+        GameState[F](
+          entities.map(e => (e.id, e)).toMap,
+          board,
+          Map.empty,
+          0,
+          initialStates
+        )
+      result = doRun(gameState, steps)
+    } yield result
   }
 
-  def step[F[_]: Monad: Applicative: Random](
+  private def setupEntities[F[_]](
+      entities: List[Entity[F]]
+  ): Map[EntityId, BotState] = {
+    entities.foldLeft[Map[EntityId, BotState]](Map.empty) { (acc, entity) =>
+      entity match {
+        case bot: Entity.Bot[F] => acc + (bot.id -> BotState(Map.empty, 1000))
+        case fluppet: Entity.Fluppet[F] =>
+          acc + (fluppet.id -> BotState(Map.empty, 200))
+        case minibot: Entity.Minibot[F] => ???
+      }
+    }
+  }
+
+  private def setupBoard[F[_]: Random: Monad](
+      entities: List[Entity[F]],
+      board: Board[F]
+  ): F[Board[F]] = {
+
+    for {
+      points <- Random[F].shuffleList(board.points.collect { case (p, None) =>
+        p
+      })
+      zipped = points.zip(entities)
+      withPlacements = zipped.foldLeft[Board[F]](board) {
+        case (acc, (point, entity)) =>
+          acc.set(entity, point)
+      }
+    } yield withPlacements
+  }
+
+  def step[F[_]: Monad: Parallel: Random](
       input: GameState[F]
   ): F[GameState[F]] = {
     val entities = input.entities
 
-    val runBots = input.time % 2 == 0
     val commands = entities.values.toList
-      .filter(entity => runBots || !entity.isInstanceOf[Entity.Bot[F]])
+      .filter(_.triggers(input.time))
       .map { case entity =>
         val entityInput = entity.narrow(input)
         val feedback = input.commandFeedback.get(entity.id)
         entity.act(entityInput).map(c => (entity, c))
       }
-      .sequence
+      .parSequence
 
     val newState = commands.map { cmds =>
       cmds.foldLeft[GameState[F]](input) { (acc, current) =>
@@ -175,20 +166,17 @@ object Game {
     Point(adjustedX, adjustedY)
   }
 
-  private def removeDeadMinitbots[F[_]](game: GameState[F]): GameState[F] = {
-    val forUpkeep = game.entities.values
-      .collect { case minibot: Entity.Minibot[F] => minibot }
-      .filter { minibot =>
-        (game.time - minibot.spawnTime) % 4 == 3
+  private def removeDeadEntities[F[_]](game: GameState[F]): GameState[F] = {
+    val deadEntities = game.entities.values
+      .map(e => game.botState.get(e.id).map(s => (e, s)))
+      .collect { case Some(v) => v }
+      .filter {
+        case (_: Entity.Bot[F], _) => false
+        case other                 => other._2.energy <= 0
       }
 
-    forUpkeep.foldLeft[GameState[F]](game) { (acc, minibot) =>
-      val currentEnergy = acc.botState(minibot.id).energy
-      if (currentEnergy <= 0) {
-        game.removeEntity(minibot.id)
-      } else {
-        game
-      }
+    deadEntities.foldLeft[GameState[F]](game) { case (acc, (entity, _)) =>
+      game.removeEntity(entity.id)
     }
   }
 
@@ -210,7 +198,104 @@ object Game {
             .set(newEnergy))
         )
     }
-    removeDeadMinitbots(withUpkeep)
+    removeDeadEntities(withUpkeep)
+  }
+
+  private def addEnergy[F[_]](
+      game: GameState[F],
+      entityId: EntityId,
+      energy: Int
+  ): GameState[F] = {
+    game.focus(_.botState).modify { states =>
+      states + (entityId -> states(entityId).focus(_.energy).modify(_ + energy))
+    }
+  }
+
+  private def stateOf[F[_]](
+      game: GameState[F],
+      entityId: EntityId
+  ): BotState = {
+    game.botState(entityId)
+  }
+
+  private def collide[F[_]](
+      game: GameState[F],
+      move: Command.Move,
+      movingEntity: Entity[F],
+      stationaryEntity: Entity[F]
+  ): GameState[F] = {
+    def bonk(game: GameState[F]): GameState[F] = game
+      .focus(_.commandFeedback)
+      .modify(_ + (movingEntity.id -> CommandFeedback.Collision(move)))
+    (movingEntity, stationaryEntity) match {
+      case (bot: Entity.Bot[F], target: Entity.Bot[F]) =>
+        bonk(game)
+      case (bot: Entity.Bot[F], target: Entity.Minibot[F]) =>
+        if (target.parent == bot.id) {
+          // consume child
+          addEnergy(game, bot.id, stateOf(game, target.id).energy)
+            .removeEntity(target.id)
+        } else {
+          addEnergy(game, bot.id, 150).removeEntity(target.id)
+        }
+      case (bot: Entity.Bot[F], target: Entity.Fluppet[F]) =>
+        addEnergy(game, bot.id, 200).removeEntity(target.id)
+
+      case (minibot: Entity.Minibot[F], target: Entity.Bot[F]) =>
+        if (minibot.parent == target.id) {
+          // consume child
+          addEnergy(game, target.id, stateOf(game, minibot.id).energy)
+            .removeEntity(minibot.id)
+        } else {
+          game.removeEntity(minibot.id)
+        }
+      case (minibot: Entity.Minibot[F], target: Entity.Minibot[F]) =>
+        if (minibot.parent == target.parent) {
+          // same side
+          bonk(game)
+        } else {
+          game.removeEntity(minibot.id).removeEntity(target.id)
+        }
+      case (minibot: Entity.Minibot[F], target: Entity.Fluppet[F]) =>
+        addEnergy(game, minibot.id, 200).removeEntity(target.id)
+
+      case (fluppet: Entity.Fluppet[F], target: Entity.Bot[F]) =>
+        addEnergy(game, target.id, 200).removeEntity(fluppet.id)
+
+      case (fluppet: Entity.Fluppet[F], target: Entity.Minibot[F]) =>
+        addEnergy(game, target.id, 200).removeEntity(fluppet.id)
+      case (fluppet: Entity.Fluppet[F], other: Entity[F]) =>
+        bonk(game)
+    }
+  }
+
+  private def move[F[_]](
+      game: GameState[F],
+      entity: Entity[F],
+      move: Command.Move
+  ): GameState[F] = {
+    if (move.isValid) {
+      val result = for {
+        currentPosition <- game.occupancies.positionOf(entity)
+        newPosition = moveAdjusted(
+          game.occupancies.length,
+          currentPosition,
+          move.deltaX,
+          move.deltaY
+        )
+        newGame = game.occupancies.entityAt(newPosition) match {
+          case None =>
+            game.focus(_.occupancies).modify { board =>
+              board.clear(currentPosition).set(entity, newPosition)
+            }
+          case Some(other) => collide(game, move, entity, other)
+
+        }
+      } yield newGame
+      result.getOrElse(game)
+    } else {
+      game
+    }
   }
 
   private def resolve[F[_]: Monad](
@@ -397,7 +482,7 @@ object Game {
               .modify(_ + totalDamage))
           )
       }
-      .map(removeDeadMinitbots)
+      .map(removeDeadEntities)
       .getOrElse(game)
   }
 

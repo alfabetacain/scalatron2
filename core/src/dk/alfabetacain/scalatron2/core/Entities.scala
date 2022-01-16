@@ -13,6 +13,7 @@ sealed trait Entity[F[_]] {
   type Input
   def narrow(s: GameState[F]): Input
   def act(s: Input): F[Command]
+  def triggers(time: Int): Boolean
 }
 
 object Entity {
@@ -37,6 +38,8 @@ object Entity {
         deltaY <- Random[F].nextIntBounded(3).map(_ - 1)
       } yield Command.Move(deltaX, deltaY)
     }
+
+    override def triggers(time: Int): Boolean = time % 4 == 0
   }
 
   final case class Bot[F[_]: Monad](
@@ -60,6 +63,8 @@ object Entity {
         state = s.botState.get(id).map(_.state).getOrElse(Map.empty)
       )
     }
+
+    override def triggers(time: Int): Boolean = time % 2 == 0
 
     override def act(
         s: Input
@@ -96,5 +101,7 @@ object Entity {
     override def act(s: BotImpl.BotInput): F[Command] = {
       botImpl.act(s)
     }
+
+    override def triggers(time: Int): Boolean = true
   }
 }

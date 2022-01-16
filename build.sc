@@ -10,6 +10,8 @@ object interface extends CommonModule {
   )
 }
 
+object events extends CommonModule {}
+
 object core extends CommonModule {
   def scalacOptions = Seq("-Ymacro-annotations")
   def ivyDeps = Agg(
@@ -17,8 +19,9 @@ object core extends CommonModule {
     ivy"org.typelevel::cats-effect:3.3.4",
     ivy"dev.optics::monocle-core:3.1.0",
     ivy"dev.optics::monocle-macro:3.1.0",
-    ivy"io.estatico::newtype:0.4.4"
+    ivy"io.estatico::newtype:0.4.4",
+    ivy"co.fs2::fs2-core:3.2.4"
   )
 
-  def moduleDeps = Seq(interface)
+  def moduleDeps = Seq(interface, events)
 }

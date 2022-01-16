@@ -9,32 +9,38 @@ object Main extends IOApp {
   type F[A] = IO[A]
 
   override def run(args: List[String]): IO[ExitCode] = {
-    Random.scalaUtilRandom[F].flatMap { implicit r =>
-      val entities = List(
-        Entity.fluppet[F](EntityId.generate),
-        Entity.fluppet[F](EntityId.generate),
-        Entity.fluppet[F](EntityId.generate)
-      )
-      val board = Board.create[F](10).set(entities.head, Point(0, 0))
-      Game
-        .run[F](entities, board, 10)
-        .map { endState =>
-          println(visualize(endState))
-          ExitCode.Success
+    Random
+      .scalaUtilRandom[F]
+      .flatMap { implicit r =>
+        val res = Game
+          .run[F](
+            numberOfFluppets = 5,
+            numberOfSnorgs = 0,
+            numberOfZugars = 0,
+            numberOfToxifera = 0,
+            bots = List.empty,
+            boardSize = 10,
+            steps = 10
+          )
+        res
+      }
+      .flatMap { stream =>
+        stream.last.compile.toList.map { lastState =>
+          lastState.headOption.flatten
+            .map(_._1)
+            .map { lastState =>
+              println(visualize[F](lastState))
+              ExitCode.Success
+            }
+            .getOrElse(ExitCode.Error)
         }
-    }
+      }
   }
 
   private def visualize[F[_]](gameState: GameState[F]): String = {
     println(gameState)
 
-    val points = gameState.occupancies.points
-    val array = Array.fill[Array[String]](gameState.occupancies.length)(
-      Array.fill[String](gameState.occupancies.length)("_")
-    )
-    points.foreach { current =>
-      array(current._1.y)(current._1.x) = "X"
-    }
+    val array = gameState.occupancies.visualize(EntityId.generate)
 
     array.map(_.mkString(" ")).mkString("\n")
 
