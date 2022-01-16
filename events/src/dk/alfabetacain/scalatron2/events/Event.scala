@@ -14,15 +14,20 @@ object Faction {
 }
 final case class Entity(id: String, kind: EntityType, belongsTo: Faction)
 
-sealed trait Event
+final case class Event(
+    state: Array[Array[Option[Entity]]],
+    preceedingGameEvents: List[GameEvent]
+)
 
-object Event {
+sealed trait GameEvent
+
+object GameEvent {
   final case class Setup(boardSize: Int, players: List[Faction.Player])
-      extends Event
+      extends GameEvent
   final case class EntityAdded(entity: Entity, position: (Int, Int))
-      extends Event
-  final case class EntityRemoved(entity: Entity) extends Event
+      extends GameEvent
+  final case class EntityRemoved(entity: Entity) extends GameEvent
   final case class Moved(entity: Entity, from: (Int, Int), to: (Int, Int))
-      extends Event
-  final case class Stepped(newTime: Int) extends Event
+      extends GameEvent
+  final case class Stepped(newTime: Int) extends GameEvent
 }

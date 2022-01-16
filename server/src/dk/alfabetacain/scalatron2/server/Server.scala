@@ -9,18 +9,21 @@ import org.http4s.implicits._
 import org.http4s.server.Router
 import cats.effect.std.Random
 import org.typelevel.log4cats.slf4j.Slf4jLogger
+import cats.effect.kernel.Resource
 
 object Server extends IOApp {
   override def run(args: List[String]): IO[ExitCode] = {
-    for {
-      random <- Random.scalaUtilRandom[IO]
-      logger <- Slf4jLogger.create[IO]
-      httpApp = Router("/" -> Service.routes(random)).orNotFound
+    val resources = for {
+      random <- Resource.eval(Random.scalaUtilRandom[IO])
+      logger <- Resource.eval(Slf4jLogger.create[IO])
+      routes <- Service.routes(random)
+      httpApp = Router("/" -> routes).orNotFound
       server <- BlazeServerBuilder[IO]
         .bindHttp(8080, "localhost")
         .withHttpApp(httpApp)
         .resource
-        .use(s => IO.never)
-    } yield ExitCode.Success
+    } yield server
+
+    resources.use { _ => IO.never }
   }
 }
